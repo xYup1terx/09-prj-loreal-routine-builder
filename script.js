@@ -4,6 +4,9 @@ const productsContainer = document.getElementById("productsContainer");
 const chatForm = document.getElementById("chatForm");
 const chatWindow = document.getElementById("chatWindow");
 
+/* Cloudflare Worker base URL - your provided endpoint */
+const API_BASE = "https://loreallll.templeal.workers.dev";
+
 /* Show initial placeholder until user selects a category */
 productsContainer.innerHTML = `
   <div class="placeholder-message">
@@ -49,9 +52,56 @@ categoryFilter.addEventListener("change", async (e) => {
   displayProducts(filteredProducts);
 });
 
-/* Chat form submission handler - placeholder for OpenAI integration */
-chatForm.addEventListener("submit", (e) => {
+/* Helper to append messages to the chat window */
+function appendChatMessage(role, text) {
+  const wrapper = document.createElement("div");
+  wrapper.className = `chat-message chat-${role}`;
+  const p = document.createElement("p");
+  p.textContent = text;
+  wrapper.appendChild(p);
+  chatWindow.appendChild(wrapper);
+  chatWindow.scrollTop = chatWindow.scrollHeight;
+  return wrapper;
+}
+
+/* Chat form submission handler - sends user message to the Cloudflare Worker and shows the assistant reply */
+chatForm.addEventListener("submit", async (e) => {
   e.preventDefault();
 
-  chatWindow.innerHTML = "Connect to the OpenAI API for a response!";
+  const inputEl = document.getElementById("userInput");
+  const userText = inputEl.value.trim();
+  if (!userText) return;
+
+  // show user's message
+  appendChatMessage("user", userText);
+  inputEl.value = "";
+
+  // show assistant loading message
+  const loadingEl = appendChatMessage("assistant", "Thinking...");
+
+  try {
+    const res = await fetch(API_BASE, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messages: [{ role: "user", content: userText }] }),
+    });
+
+    if (!res.ok) {
+      const txt = await res.text().catch(() => res.statusText);
+      loadingEl.querySelector("p").textContent = `Error: ${res.status} ${txt}`;
+      return;
+    }
+
+    const data = await res.json();
+    const assistantReply =
+      data?.choices?.[0]?.message?.content ||
+      data?.reply ||
+      data?.message ||
+      JSON.stringify(data);
+    loadingEl.querySelector("p").textContent = assistantReply;
+  } catch (err) {
+    console.error("Chat request failed", err);
+    loadingEl.querySelector("p").textContent =
+      "Sorry — I could not reach the API. Try again later.";
+  }
 });
