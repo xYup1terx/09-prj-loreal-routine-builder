@@ -10,10 +10,75 @@ const learnMoreToggle = document.getElementById("learnMoreToggle");
 /* Cloudflare Worker base URL - your provided endpoint */
 const API_BASE = "https://loreallll.templeal.workers.dev";
 
+/* Conversation history to keep context for follow-ups during the session */
+const messagesHistory = [
+  {
+    role: "system",
+    content:
+      "You are an assistant that ONLY answers questions about L'Oréal products, routines, and closely related topics (skincare, haircare, makeup, fragrance). However, when the user provides a list of products (for example when generating a routine), assume the provided product entries are to be considered for the routine unless the product's brand field explicitly indicates a non-L'Oréal brand. Do NOT omit or exclude products from the routine simply because their name does not contain the word 'L'Oréal'. If a user asks about another brand or an unrelated topic, politely decline. Use the conversation history to provide relevant, concise answers about the generated routine or L'Oréal products.",
+  },
+];
+
+// Simple client-side heuristics for rejecting out-of-scope questions quickly
+const OUT_OF_SCOPE_BRANDS = [
+  "maybelline",
+  "mac",
+  "clinique",
+  "estee",
+  "estée",
+  "nars",
+  "revlon",
+  "covergirl",
+  "benefit",
+  "sephora",
+  "nyx",
+  "bareminerals",
+];
+
+function isAllowedQuestion(text) {
+  if (!text || !text.trim()) return false;
+  const t = text.toLowerCase();
+
+  // deny if explicitly asks about other brands we know (to be conservative)
+  for (const b of OUT_OF_SCOPE_BRANDS) if (t.includes(b)) return false;
+
+  // allow if mentions L'Oreal explicitly
+  if (t.includes("l'oreal") || t.includes("loreal")) return true;
+
+  // allow follow-ups if a routine has already been generated in this session (unless it mentions a banned brand)
+  if (routineGenerated) return true;
+
+  // allow if it mentions core topics
+  const allowedTerms = [
+    "skincare",
+    "haircare",
+    "makeup",
+    "fragrance",
+    "routine",
+    "product",
+    "sunscreen",
+    "serum",
+    "cleanser",
+    "moisturizer",
+  ];
+  for (const term of allowedTerms) if (t.includes(term)) return true;
+
+  // allow if it references any selected product by name
+  for (const p of selectedProducts) {
+    if (!p || !p.name) continue;
+    if (t.includes(p.name.toLowerCase())) return true;
+  }
+
+  // conservative default: deny (require explicit L'Oréal or product/topic mention)
+  return false;
+}
+
 /* State for product selection */
 const selectedProductsListEl = document.getElementById("selectedProductsList");
 let selectedProducts = []; // array of product objects selected by the user
 let lastDisplayedProducts = [];
+// flag set when a routine has been generated during this session
+let routineGenerated = false;
 
 /* Show initial placeholder until user selects a category */
 productsContainer.innerHTML = `
@@ -98,7 +163,7 @@ function setLearnMore(enabled) {
   if (learnMoreToggle) {
     learnMoreToggle.setAttribute("aria-pressed", enabled ? "true" : "false");
     learnMoreToggle.classList.toggle("active", !!enabled);
-    learnMoreToggle.textContent = enabled ? "Learn More: On" : "Learn More";
+    learnMoreToggle.textContent = enabled ? "Info Mode: On" : "Info Mode";
   }
   try {
     localStorage.setItem("learnMore", enabled ? "true" : "false");
@@ -312,15 +377,16 @@ if (generateBtn) {
         })),
       };
 
+      // Add a user instruction into the conversation history for generation
+      const genInstruction =
+        "Please generate a routine using the following products. Format the response in Markdown (headers, bold, bullets):\n" +
+        JSON.stringify(userPayload, null, 2);
+      messagesHistory.push({ role: "user", content: genInstruction });
+
       const res = await fetch(API_BASE, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: JSON.stringify(userPayload, null, 2) },
-          ],
-        }),
+        body: JSON.stringify({ messages: messagesHistory }),
       });
 
       if (!res.ok) {
@@ -337,6 +403,12 @@ if (generateBtn) {
         data?.reply ||
         data?.message ||
         JSON.stringify(data);
+
+      // Save raw assistant reply into history for future follow-ups
+      const rawAssistant = assistantReply;
+      messagesHistory.push({ role: "assistant", content: rawAssistant });
+      // mark that a routine was generated so follow-up questions about it are allowed
+      routineGenerated = true;
 
       // Highlight selected product mentions by tokenizing product names first,
       // render markdown to HTML, then replace tokens with highlighted HTML.
@@ -390,11 +462,25 @@ chatForm.addEventListener("submit", async (e) => {
   // show assistant loading message
   const loadingEl = appendChatMessage("assistant", "Thinking...");
 
+  // Quick client-side out-of-scope check: decline if not allowed
+  if (!isAllowedQuestion(userText)) {
+    const decline =
+      "Sorry — I can only answer questions about L'Oréal products, routines, or closely related topics. I can't help with other brands or unrelated subjects.";
+    // update the loading bubble with a polite decline
+    loadingEl.querySelector("p").textContent = decline;
+    // record assistant decline in history
+    messagesHistory.push({ role: "assistant", content: decline });
+    return;
+  }
+
   try {
+    // add the user's message to conversation history
+    messagesHistory.push({ role: "user", content: userText });
+
     const res = await fetch(API_BASE, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ messages: [{ role: "user", content: userText }] }),
+      body: JSON.stringify({ messages: messagesHistory }),
     });
 
     if (!res.ok) {
@@ -409,7 +495,14 @@ chatForm.addEventListener("submit", async (e) => {
       data?.reply ||
       data?.message ||
       JSON.stringify(data);
-    loadingEl.querySelector("p").textContent = assistantReply;
+
+    // push assistant reply into history so follow-ups have context
+    messagesHistory.push({ role: "assistant", content: assistantReply });
+
+    // render assistant reply (support markdown) into the chat window
+    const rendered = renderMarkdownToHTML(assistantReply);
+    loadingEl.innerHTML = rendered;
+    chatWindow.scrollTop = chatWindow.scrollHeight;
   } catch (err) {
     console.error("Chat request failed", err);
     loadingEl.querySelector("p").textContent =
