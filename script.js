@@ -15,7 +15,7 @@ const messagesHistory = [
   {
     role: "system",
     content:
-      "You are an assistant that ONLY answers questions about L'Oréal products, routines, and closely related topics (skincare, haircare, makeup, fragrance). However, when the user provides a list of products (for example when generating a routine), assume the provided product entries are to be considered for the routine unless the product's brand field explicitly indicates a non-L'Oréal brand. Do NOT omit or exclude products from the routine simply because their name does not contain the word 'L'Oréal'. If a user asks about another brand or an unrelated topic, politely decline. Use the conversation history to provide relevant, concise answers about the generated routine or L'Oréal products.",
+      "You are an assistant that answers questions about L'Oréal products, routines, and closely related topics (skincare, haircare, makeup, fragrance). When the user provides a list of products (for example when generating a routine), assume the provided product entries are to be considered for the routine and include them. Do NOT omit or exclude products from the routine. If a user asks about another brand or an unrelated topic outside beauty, politely decline. Use the conversation history to provide relevant, concise answers about the generated routine or L'Oréal products.",
   },
 ];
 
@@ -39,17 +39,33 @@ function isAllowedQuestion(text) {
   if (!text || !text.trim()) return false;
   const t = text.toLowerCase();
 
-  // deny if explicitly asks about other brands we know (to be conservative)
-  for (const b of OUT_OF_SCOPE_BRANDS) if (t.includes(b)) return false;
+  // Block a few clearly non-beauty topics so the assistant stays on-topic
+  const nonBeautyTerms = [
+    "weather",
+    "politics",
+    "stock",
+    "crypto",
+    "bitcoin",
+    "sports",
+    "soccer",
+    "football",
+    "programming",
+    "code",
+    "recipe",
+    "cooking",
+  ];
+  for (const nb of nonBeautyTerms) if (t.includes(nb)) return false;
 
-  // allow if mentions L'Oreal explicitly
+  // If user explicitly mentions L'Oréal, always allow
   if (t.includes("l'oreal") || t.includes("loreal")) return true;
 
-  // allow follow-ups if a routine has already been generated in this session (unless it mentions a banned brand)
+  // Allow follow-ups after a routine is generated
   if (routineGenerated) return true;
 
-  // allow if it mentions core topics
-  const allowedTerms = [
+  // Broad list of beauty-related terms we consider in-scope. This is intentionally
+  // generous so questions like "What is a good mascara?" will be answered with
+  // L'Oréal-focused suggestions rather than declined.
+  const beautyTerms = [
     "skincare",
     "haircare",
     "makeup",
@@ -60,8 +76,35 @@ function isAllowedQuestion(text) {
     "serum",
     "cleanser",
     "moisturizer",
+    "mascara",
+    "foundation",
+    "lipstick",
+    "eyeliner",
+    "eyebrow",
+    "concealer",
+    "primer",
+    "toner",
+    "exfoli",
+    "spf",
+    "conditioner",
+    "shampoo",
+    "styling",
+    "volum",
+    "curl",
+    "frizz",
+    "heat protect",
+    "blow",
+    "brush",
+    "serum",
+    "retinol",
+    "vitamin c",
+    "niacinamide",
+    "ceramide",
+    "mask",
+    "sheet",
+    "cleanse",
   ];
-  for (const term of allowedTerms) if (t.includes(term)) return true;
+  for (const term of beautyTerms) if (t.includes(term)) return true;
 
   // allow if it references any selected product by name
   for (const p of selectedProducts) {
@@ -69,8 +112,29 @@ function isAllowedQuestion(text) {
     if (t.includes(p.name.toLowerCase())) return true;
   }
 
-  // conservative default: deny (require explicit L'Oréal or product/topic mention)
+  // default: deny if it doesn't look like a beauty question
   return false;
+}
+
+/* Helpers for friendly local responses */
+function isGreeting(text) {
+  if (!text) return false;
+  const t = text.toLowerCase().trim();
+  return /^(hi|hello|hey|hiya|good morning|good afternoon|good evening)([!.,]?\s*)?$/.test(
+    t
+  );
+}
+
+function isNameIntro(text) {
+  if (!text) return false;
+  return /\b(my name is|i am|i'm|im)\b/i.test(text);
+}
+
+function parseNameFromIntro(text) {
+  const m = text.match(/\b(?:my name is|i am|i'm|im)\s+(.+)$/i);
+  if (!m) return null;
+  // take first part before punctuation
+  return m[1].trim().replace(/[.!?]$/, "");
 }
 
 /* State for product selection */
@@ -186,6 +250,12 @@ if (learnMoreToggle) {
     setLearnMore(enabled);
   });
 }
+
+// Show a friendly startup welcome message and record it in conversation history
+const startupWelcome =
+  "Hi — welcome! I can help you build a personalized routine with L'Oréal products. Select some products and click \"Generate Routine\", or ask me about L'Oréal skincare, haircare, makeup, or fragrance.";
+appendChatMessage("assistant", startupWelcome);
+messagesHistory.push({ role: "assistant", content: startupWelcome });
 
 /* Render the selected products list UI */
 function renderSelectedProducts() {
@@ -377,16 +447,33 @@ if (generateBtn) {
         })),
       };
 
-      // Add a user instruction into the conversation history for generation
+      // Create a strong, per-request instruction that forces inclusion of all provided products
+      // and instructs the model to avoid repeating product descriptions or brand overviews
+      // (those are available in Info Mode). The assistant should produce a concise,
+      // step-by-step routine using the provided items and include only short actionable tips
+      // when necessary. We do NOT push this into the persistent messagesHistory until after a
+      // successful response, to avoid the global system prompt being misinterpreted later.
       const genInstruction =
-        "Please generate a routine using the following products. Format the response in Markdown (headers, bold, bullets):\n" +
+        "Please generate a concise, step-by-step routine using the following products. Do NOT include full product descriptions or brand overviews (those are shown in Info Mode). Focus only on ordered application steps, timing (morning/evening), frequency where relevant, and brief actionable tips (one or two short sentences per step). Format the response in Markdown (title, numbered steps, bold for important notes, and bullets for tips):\n" +
         JSON.stringify(userPayload, null, 2);
-      messagesHistory.push({ role: "user", content: genInstruction });
+
+      // Clarify that all listed products must be included in the routine. Do not refuse to include
+      // any product simply because its brand field doesn't say 'L'Oréal'. If a product's brand is
+      // explicitly a non-L'Oréal brand, you may briefly note that but still include it as requested.
+      const inclusionClarification =
+        "IMPORTANT: For this request, include every product listed below in the routine. Do not omit items or refuse to include them because of brand name heuristics. Keep notes short; do not repeat full product descriptions.";
+
+      // Build a temporary payload that includes the current conversation plus the per-request clarifications.
+      const payloadMessages = [
+        ...messagesHistory,
+        { role: "user", content: inclusionClarification },
+        { role: "user", content: genInstruction },
+      ];
 
       const res = await fetch(API_BASE, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: messagesHistory }),
+        body: JSON.stringify({ messages: payloadMessages }),
       });
 
       if (!res.ok) {
@@ -404,8 +491,9 @@ if (generateBtn) {
         data?.message ||
         JSON.stringify(data);
 
-      // Save raw assistant reply into history for future follow-ups
+      // Save the generation instruction and raw assistant reply into history for future follow-ups
       const rawAssistant = assistantReply;
+      messagesHistory.push({ role: "user", content: genInstruction });
       messagesHistory.push({ role: "assistant", content: rawAssistant });
       // mark that a routine was generated so follow-up questions about it are allowed
       routineGenerated = true;
@@ -458,6 +546,26 @@ chatForm.addEventListener("submit", async (e) => {
   // show user's message
   appendChatMessage("user", userText);
   inputEl.value = "";
+  // Local friendly handling for simple greetings / name intros (no API call needed)
+  if (isNameIntro(userText)) {
+    const name = parseNameFromIntro(userText) || "";
+    const reply = name
+      ? `Nice to meet you, ${name}! I'm here to help you build a L'Oréal routine — select products and click "Generate Routine" or ask about L'Oréal products.`
+      : "Nice to meet you! I'm here to help you build a L'Oréal routine — select products and click \"Generate Routine\" or ask about L'Oréal products.";
+    const loadingEl = appendChatMessage("assistant", reply);
+    messagesHistory.push({ role: "user", content: userText });
+    messagesHistory.push({ role: "assistant", content: reply });
+    return;
+  }
+
+  if (isGreeting(userText)) {
+    const reply =
+      "Hi — welcome! I can help you build a personalized routine with L'Oréal products. Select some products and click \"Generate Routine\", or ask me about L'Oréal skincare, haircare, makeup, or fragrance.";
+    const loadingEl = appendChatMessage("assistant", reply);
+    messagesHistory.push({ role: "user", content: userText });
+    messagesHistory.push({ role: "assistant", content: reply });
+    return;
+  }
 
   // show assistant loading message
   const loadingEl = appendChatMessage("assistant", "Thinking...");
