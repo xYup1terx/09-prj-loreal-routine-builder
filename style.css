@@ -43,7 +43,7 @@ body {
 }
 
 .search-section select {
-  width: 100%;
+  flex: 1; /* allow toggle button to sit beside the select */
   padding: 16px;
   font-size: 18px;
   border: 2px solid #000;
@@ -51,6 +51,23 @@ body {
   cursor: pointer;
   background-color: white;
   font-weight: 500;
+}
+
+/* small Learn More toggle button */
+.learnmore-toggle {
+  margin-left: 12px;
+  padding: 12px 14px;
+  font-size: 14px;
+  border-radius: 8px;
+  border: 2px solid #000;
+  background: white;
+  cursor: pointer;
+}
+
+.learnmore-toggle.active {
+  background: #e3a535;
+  color: #fff;
+  border-color: #e3a535;
 }
 
 .search-section select:focus {
@@ -68,17 +85,140 @@ body {
 
 .chatbox h2 {
   font-size: 20px;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
 }
 
 .chat-window {
-  padding: 20px;
+  padding: 16px;
   font-size: 18px;
-  line-height: 1.5;
+  line-height: 1.45;
   height: 250px;
   overflow-y: auto;
   background: #fafafa;
   margin-bottom: 20px;
+}
+
+/* Chat message bubbles: differentiate user vs assistant */
+.chat-window {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.chat-message {
+  max-width: 86%;
+  padding: 10px 14px;
+  border-radius: 14px;
+  word-wrap: break-word;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
+}
+
+.chat-message.chat-assistant {
+  background: #ffffff;
+  border: 1px solid #eee;
+  color: #111;
+  align-self: flex-start; /* left */
+}
+
+.chat-message.chat-user {
+  background: #111; /* dark bubble */
+  color: #fff;
+  align-self: flex-end; /* right */
+}
+
+.chat-message p {
+  margin: 0;
+}
+
+/* ensure paragraph text inside user bubbles stays white (override generic #chatWindow p) */
+#chatWindow .chat-message.chat-user p {
+  color: #fff;
+}
+
+/* small visual labels for role (optional) */
+.chat-message.chat-assistant::before,
+.chat-message.chat-user::before {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 8px;
+  vertical-align: middle;
+}
+.chat-message.chat-assistant::before {
+  background: #e3a535;
+}
+.chat-message.chat-user::before {
+  background: #fff;
+  box-shadow: 0 0 0 2px #111 inset;
+}
+
+/* Improve text hierarchy inside the chat window for AI-generated routines */
+#chatWindow h1,
+#chatWindow h2,
+#chatWindow h3,
+#chatWindow h4 {
+  margin: 6px 0 4px 0;
+  font-weight: 700;
+  color: #111;
+  line-height: 1.2;
+}
+
+#chatWindow h1 {
+  font-size: 20px;
+}
+#chatWindow h2 {
+  font-size: 18px;
+}
+#chatWindow h3 {
+  font-size: 16px;
+  font-weight: 600;
+  color: #222;
+}
+#chatWindow h4 {
+  font-size: 14px;
+  font-weight: 600;
+  color: #333;
+}
+
+#chatWindow p {
+  margin: 4px 0;
+  font-size: 15px;
+  color: #333;
+}
+
+#chatWindow strong {
+  color: #111;
+  font-weight: 700;
+}
+
+#chatWindow ul {
+  margin: 6px 0 8px 18px;
+}
+
+#chatWindow li {
+  margin: 4px 0;
+  line-height: 1.35;
+}
+
+/* Visual indicator for product references inside chat responses */
+#chatWindow .product-ref {
+  display: inline-block;
+  background: rgba(227, 165, 53, 0.08);
+  border-left: 3px solid #e3a535;
+  padding: 3px 8px;
+  border-radius: 6px;
+  margin-right: 6px;
+  color: #111;
+  font-weight: 600;
+}
+
+/* Slightly dim the metadata / small notes */
+#chatWindow .meta,
+#chatWindow small {
+  color: #666;
+  font-size: 13px;
 }
 
 /* placeholder message */
@@ -195,6 +335,46 @@ body {
   transform: translateZ(0);
 }
 
+/* product description overlay shown on hover / focus */
+.product-card {
+  position: relative;
+}
+
+.product-desc {
+  /* occupy most of the card area but allow internal scrolling for long text */
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  top: 10px; /* expanded to top so it covers image and info when visible */
+  bottom: 10px;
+  background: rgba(255, 255, 255, 0.98);
+  /* lighter, slightly larger text for readability */
+  color: #444;
+  padding: 14px;
+  border-radius: 12px;
+  font-size: 15px;
+  line-height: 1.45;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.08);
+  opacity: 0;
+  transform: translateY(6px) scale(0.995);
+  transition: opacity 160ms ease, transform 160ms ease;
+  pointer-events: none;
+  /* allow the overlay to scroll internally if content is long */
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+  box-sizing: border-box;
+  /* limit to card area (top/bottom already constrain it) */
+  max-height: calc(100% - 20px);
+}
+
+.learn-more-enabled .product-card:hover .product-desc,
+.learn-more-enabled .product-card:focus-within .product-desc,
+.learn-more-enabled .product-card:focus .product-desc {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
 /* selected product visual state */
 .product-card.selected {
   border-color: #e3a535;
@@ -202,6 +382,13 @@ body {
   background: linear-gradient(135deg, #fdf5e6 0%, #e3a535 100%);
   border-width: 4px;
   border-radius: 20px;
+}
+
+/* if a card is selected, hide the hover description so the image/info remain visible */
+.product-card.selected .product-desc {
+  opacity: 0 !important;
+  transform: translateY(6px) scale(0.995) !important;
+  pointer-events: none !important;
 }
 
 /* hover and keyboard focus visual state */
