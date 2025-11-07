@@ -182,10 +182,36 @@ body {
   flex: 0 1 calc(33.333% - 14px);
   border: 1px solid #ccc;
   padding: 15px;
-  border-radius: 4px;
+  border-radius: 20px;
   display: flex;
   gap: 15px;
   min-height: 160px;
+  cursor: pointer;
+  /* smooth hover/focus transform and shadow */
+  transition: transform 180ms ease, box-shadow 180ms ease,
+    border-color 180ms ease;
+  transform-origin: center center;
+  /* promote to its own layer for smoother transforms */
+  transform: translateZ(0);
+}
+
+/* selected product visual state */
+.product-card.selected {
+  border-color: #e3a535;
+  background: #f6f6f6;
+  background: linear-gradient(135deg, #fdf5e6 0%, #e3a535 100%);
+  border-width: 4px;
+  border-radius: 20px;
+}
+
+/* hover and keyboard focus visual state */
+.product-card:hover,
+.product-card:focus,
+.product-card:focus-within,
+.product-card:active {
+  transform: scale(1.03);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.08);
+  z-index: 2;
 }
 
 .product-card img {
