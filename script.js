@@ -227,6 +227,41 @@ function handleNameQuery(userText) {
   return true;
 }
 
+/* Detect questions about how to use the generator or how the site works */
+function isGeneratorQuery(text) {
+  if (!text || typeof text !== "string") return false;
+  const t = text.trim().toLowerCase();
+  const patterns = [
+    "how does this work",
+    "how do i use",
+    "how to use",
+    "how do i generate",
+    "how to generate",
+    "how does the generator work",
+    "how do i get a routine",
+    "how do i get my routine",
+    "what do i do to get a routine",
+    "how does this site work",
+    "how do i use this",
+    "how do i use the generator",
+    "what do i do",
+    "what do i do to use the generator",
+    "what do i do here",
+  ];
+  for (const p of patterns) if (t.includes(p)) return true;
+  return false;
+}
+
+function handleGeneratorQuery(userText) {
+  const reply =
+    "To generate a personalized routine: first select one or more products by clicking their product cards — they will appear under 'Selected Products'. When you're ready, click the 'Generate Routine' button (the wand icon) to create a step-by-step routine tailored to those items. You can also type questions in the chat about products or routines, or toggle 'Learn More' to see extra product details. Try selecting a product and then press Generate Routine to see an example.";
+  appendChatMessage("assistant", reply);
+  messagesHistory.push({ role: "user", content: userText });
+  messagesHistory.push({ role: "assistant", content: reply });
+  saveMessagesHistory();
+  return true;
+}
+
 /* Detect questions asking if the assistant remembers the user */
 function isRememberQuery(text) {
   if (!text || typeof text !== "string") return false;
@@ -1104,6 +1139,12 @@ chatForm.addEventListener("submit", async (e) => {
     messagesHistory.push({ role: "user", content: userText });
     messagesHistory.push({ role: "assistant", content: reply });
     saveMessagesHistory();
+    return;
+  }
+
+  // If the user asks how the generator works, handle locally with a short guide
+  if (isGeneratorQuery(userText)) {
+    handleGeneratorQuery(userText);
     return;
   }
 
