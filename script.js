@@ -11,13 +11,70 @@ const learnMoreToggle = document.getElementById("learnMoreToggle");
 const API_BASE = "https://loreallll.templeal.workers.dev";
 
 /* Conversation history to keep context for follow-ups during the session */
-const messagesHistory = [
-  {
-    role: "system",
-    content:
-      "You are an assistant that answers questions about L'Oréal products, routines, and closely related topics (skincare, haircare, makeup, fragrance). When the user provides a list of products (for example when generating a routine), assume the provided product entries are to be considered for the routine and include them. Do NOT omit or exclude products from the routine. If a user asks about another brand or an unrelated topic outside beauty, politely decline. Use the conversation history to provide relevant, concise answers about the generated routine or L'Oréal products.",
-  },
-];
+const defaultSystemMessage = {
+  role: "system",
+  content:
+    "You are an assistant that answers questions about L'Oréal products, routines, and closely related topics (skincare, haircare, makeup, fragrance). When the user provides a list of products (for example when generating a routine), assume the provided product entries are to be considered for the routine and include them. Do NOT omit or exclude products from the routine. If a user asks about another brand or an unrelated topic outside beauty, politely decline. Use the conversation history to provide relevant, concise answers about the generated routine or L'Oréal products.",
+};
+
+const messagesHistory = [defaultSystemMessage];
+
+// persistence helpers for messagesHistory and selectedProducts
+function saveMessagesHistory() {
+  try {
+    // persist a sanitized copy: strip out any internal generation instructions or large JSON payloads
+    const sanitized = messagesHistory.filter((m) => {
+      if (!m || !m.role || !m.content) return false;
+      // keep system, user, assistant generally, but exclude internal generation prompts
+      if (m.role === "user" && isInternalInstruction(m.content)) return false;
+      return true;
+    });
+    localStorage.setItem("messagesHistory", JSON.stringify(sanitized));
+  } catch (err) {
+    console.warn("Could not save messagesHistory", err);
+  }
+}
+
+function loadMessagesHistory() {
+  try {
+    const raw = localStorage.getItem("messagesHistory");
+    if (!raw) return false;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed) || parsed.length === 0) return false;
+    // replace in-place to keep the same array reference
+    messagesHistory.length = 0;
+    // if the first item isn't a system message, ensure the default system is present
+    if (parsed[0]?.role !== "system") {
+      messagesHistory.push(defaultSystemMessage);
+    }
+    // filter any stored internal instructions just in case
+    const filtered = parsed.filter(
+      (m) => !(m.role === "user" && isInternalInstruction(m.content))
+    );
+    filtered.forEach((m) => messagesHistory.push(m));
+    return true;
+  } catch (err) {
+    console.warn("Could not load messagesHistory", err);
+    return false;
+  }
+}
+
+/* Detect internal generation instructions or payloads that should not be shown to users */
+function isInternalInstruction(text) {
+  if (!text || typeof text !== "string") return false;
+  const t = text.toLowerCase();
+  // heuristics: contains a products JSON payload, or obvious generation prompt markers
+  if (
+    t.includes('"products":') ||
+    t.includes("format the response in markdown") ||
+    /please generate/i.test(t)
+  )
+    return true;
+  // very long single-line JSON-like strings
+  if (t.length > 2000 && (t.trim().startsWith("{") || t.trim().startsWith("[")))
+    return true;
+  return false;
+}
 
 // Simple client-side heuristics for rejecting out-of-scope questions quickly
 const OUT_OF_SCOPE_BRANDS = [
@@ -144,6 +201,28 @@ let lastDisplayedProducts = [];
 // flag set when a routine has been generated during this session
 let routineGenerated = false;
 
+function saveSelectedProducts() {
+  try {
+    localStorage.setItem("selectedProducts", JSON.stringify(selectedProducts));
+  } catch (err) {
+    console.warn("Could not save selectedProducts", err);
+  }
+}
+
+function loadSelectedProducts() {
+  try {
+    const raw = localStorage.getItem("selectedProducts");
+    if (!raw) return false;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return false;
+    selectedProducts = parsed;
+    return true;
+  } catch (err) {
+    console.warn("Could not load selectedProducts", err);
+    return false;
+  }
+}
+
 /* Show initial placeholder until user selects a category */
 productsContainer.innerHTML = `
   <div class="placeholder-message">
@@ -254,8 +333,69 @@ if (learnMoreToggle) {
 // Show a friendly startup welcome message and record it in conversation history
 const startupWelcome =
   "Hi — welcome! I can help you build a personalized routine with L'Oréal products. Select some products and click \"Generate Routine\", or ask me about L'Oréal skincare, haircare, makeup, or fragrance.";
-appendChatMessage("assistant", startupWelcome);
-messagesHistory.push({ role: "assistant", content: startupWelcome });
+// Restore saved state (selected products and conversation) if present
+const restoredMessages = loadMessagesHistory();
+const restoredSelections = loadSelectedProducts();
+if (restoredSelections) {
+  // reflect saved selections in UI (cards will be highlighted when products are displayed)
+  renderSelectedProducts();
+}
+if (restoredMessages) {
+  // render conversation from saved history
+  renderConversationFromHistory();
+} else {
+  appendChatMessage("assistant", startupWelcome);
+  messagesHistory.push({ role: "assistant", content: startupWelcome });
+  saveMessagesHistory();
+}
+
+/* Render the conversation from messagesHistory into the chat window (skips system messages) */
+function renderConversationFromHistory() {
+  chatWindow.innerHTML = "";
+  // helper: escape regex for product name matching
+  function escapeRegExp(string) {
+    return String(string).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+
+  // helper: highlight selected product mentions inside assistant text
+  function highlightProductMentionsInText(text) {
+    if (!text) return "";
+    let t = text;
+    const tokens = [];
+    selectedProducts.forEach((p, i) => {
+      const name = (p && p.name) || "";
+      if (!name) return;
+      const token = `@@PRODUCT_${i}@@`;
+      tokens.push({ token, name });
+      const re = new RegExp(escapeRegExp(name), "gi");
+      t = t.replace(re, token);
+    });
+
+    let html = renderMarkdownToHTML(t);
+    tokens.forEach(({ token, name }) => {
+      const safeName = escapeHtml(name);
+      const replacement = `<span class="product-ref">${safeName}</span>`;
+      html = html.split(token).join(replacement);
+    });
+    return html;
+  }
+  for (const m of messagesHistory) {
+    if (!m || !m.role) continue;
+    // skip system messages and any internal instructions that should not be visible
+    if (m.role === "system") continue;
+    if (m.role === "user" && isInternalInstruction(m.content)) continue;
+    if (m.role === "user") {
+      appendChatMessage("user", m.content);
+    } else if (m.role === "assistant") {
+      // render assistant markdown as HTML and highlight any product mentions
+      const wrapper = document.createElement("div");
+      wrapper.className = "chat-message chat-assistant";
+      wrapper.innerHTML = highlightProductMentionsInText(m.content);
+      chatWindow.appendChild(wrapper);
+    }
+  }
+  chatWindow.scrollTop = chatWindow.scrollHeight;
+}
 
 /* Render the selected products list UI */
 function renderSelectedProducts() {
@@ -269,6 +409,19 @@ function renderSelectedProducts() {
     `
     )
     .join("");
+
+  // If there are any selected products, show a Clear All button for convenience
+  if (selectedProducts.length > 0) {
+    const clearBtn = document.createElement("button");
+    clearBtn.className = "clear-all";
+    clearBtn.id = "clearAllSelections";
+    clearBtn.type = "button";
+    clearBtn.textContent = "Clear all";
+    clearBtn.setAttribute("aria-label", "Clear all selected products");
+    selectedProductsListEl.appendChild(clearBtn);
+  }
+  // persist selections
+  saveSelectedProducts();
 }
 
 /* Toggle selection for a product at given displayed index */
@@ -353,6 +506,85 @@ selectedProductsListEl.addEventListener("click", (e) => {
     }
   }
 });
+
+/* Clear all selections handler (uses in-page confirm UI) */
+selectedProductsListEl.addEventListener("click", (e) => {
+  const clearBtn =
+    e.target.closest(".clear-all") || e.target.closest("#clearAllSelections");
+  if (!clearBtn) return;
+
+  // show an in-page confirmation UI instead of the native confirm()
+  showClearAllConfirm(clearBtn);
+});
+
+/* Create and show an in-page confirmation UI to clear all selections */
+function showClearAllConfirm(anchorEl) {
+  // If an existing confirm box is present, don't create another
+  if (document.querySelector(".clear-confirm")) return;
+
+  const confirmBox = document.createElement("div");
+  confirmBox.className = "clear-confirm";
+  confirmBox.setAttribute("role", "dialog");
+  confirmBox.setAttribute("aria-modal", "true");
+  confirmBox.innerHTML = `
+    <div class="clear-confirm-inner">
+      <p class="clear-confirm-message">Remove all selected products?</p>
+      <div class="clear-confirm-actions">
+        <button class="btn btn-confirm" type="button">Confirm</button>
+        <button class="btn btn-cancel" type="button">Cancel</button>
+      </div>
+    </div>
+  `;
+
+  // Insert the confirm box into the selected products container so it's visually connected
+  selectedProductsListEl.appendChild(confirmBox);
+
+  const btnConfirm = confirmBox.querySelector(".btn-confirm");
+  const btnCancel = confirmBox.querySelector(".btn-cancel");
+
+  function doClear() {
+    // un-highlight any visible cards
+    selectedProducts.forEach((prod) => {
+      const idx = lastDisplayedProducts.findIndex(
+        (lp) => lp.id === prod.id || lp.name === prod.name
+      );
+      if (idx >= 0) {
+        const el = productsContainer.querySelector(
+          `.product-card[data-index="${idx}"]`
+        );
+        if (el) {
+          el.classList.remove("selected");
+          el.setAttribute("aria-pressed", "false");
+        }
+      }
+    });
+
+    // clear selection state and re-render
+    selectedProducts = [];
+    renderSelectedProducts();
+    removeConfirm();
+  }
+
+  function removeConfirm() {
+    // tidy up
+    if (confirmBox && confirmBox.parentNode)
+      confirmBox.parentNode.removeChild(confirmBox);
+    // return focus to the Clear All button or the selectedProductsListEl
+    if (anchorEl && typeof anchorEl.focus === "function") anchorEl.focus();
+    else selectedProductsListEl.focus();
+  }
+
+  btnConfirm.addEventListener("click", doClear, { once: true });
+  btnCancel.addEventListener("click", removeConfirm, { once: true });
+
+  // keyboard handling: Esc cancels
+  confirmBox.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape") removeConfirm();
+  });
+
+  // focus the cancel button by default so users don't accidentally confirm
+  btnCancel.focus();
+}
 
 /* Minimal markdown renderer for headings, bold and bullets */
 function escapeHtml(str) {
@@ -495,6 +727,8 @@ if (generateBtn) {
       const rawAssistant = assistantReply;
       messagesHistory.push({ role: "user", content: genInstruction });
       messagesHistory.push({ role: "assistant", content: rawAssistant });
+      // persist conversation
+      saveMessagesHistory();
       // mark that a routine was generated so follow-up questions about it are allowed
       routineGenerated = true;
 
@@ -555,6 +789,7 @@ chatForm.addEventListener("submit", async (e) => {
     const loadingEl = appendChatMessage("assistant", reply);
     messagesHistory.push({ role: "user", content: userText });
     messagesHistory.push({ role: "assistant", content: reply });
+    saveMessagesHistory();
     return;
   }
 
@@ -564,6 +799,7 @@ chatForm.addEventListener("submit", async (e) => {
     const loadingEl = appendChatMessage("assistant", reply);
     messagesHistory.push({ role: "user", content: userText });
     messagesHistory.push({ role: "assistant", content: reply });
+    saveMessagesHistory();
     return;
   }
 
@@ -578,12 +814,14 @@ chatForm.addEventListener("submit", async (e) => {
     loadingEl.querySelector("p").textContent = decline;
     // record assistant decline in history
     messagesHistory.push({ role: "assistant", content: decline });
+    saveMessagesHistory();
     return;
   }
 
   try {
     // add the user's message to conversation history
     messagesHistory.push({ role: "user", content: userText });
+    saveMessagesHistory();
 
     const res = await fetch(API_BASE, {
       method: "POST",
@@ -606,6 +844,7 @@ chatForm.addEventListener("submit", async (e) => {
 
     // push assistant reply into history so follow-ups have context
     messagesHistory.push({ role: "assistant", content: assistantReply });
+    saveMessagesHistory();
 
     // render assistant reply (support markdown) into the chat window
     const rendered = renderMarkdownToHTML(assistantReply);
