@@ -1,5 +1,6 @@
 /* Get references to DOM elements */
 const categoryFilter = document.getElementById("categoryFilter");
+const productSearch = document.getElementById("productSearch");
 const productsContainer = document.getElementById("productsContainer");
 const chatForm = document.getElementById("chatForm");
 const chatWindow = document.getElementById("chatWindow");
@@ -25,7 +26,9 @@ function saveMessagesHistory() {
     // persist a sanitized copy: strip out any internal generation instructions or large JSON payloads
     const sanitized = messagesHistory.filter((m) => {
       if (!m || !m.role || !m.content) return false;
-      // keep system, user, assistant generally, but exclude internal generation prompts
+      // Do not persist system messages (they may be stale and cause conflicting instructions on reload)
+      if (m.role === "system") return false;
+      // exclude internal generation prompts
       if (m.role === "user" && isInternalInstruction(m.content)) return false;
       return true;
     });
@@ -198,6 +201,7 @@ function parseNameFromIntro(text) {
 const selectedProductsListEl = document.getElementById("selectedProductsList");
 let selectedProducts = []; // array of product objects selected by the user
 let lastDisplayedProducts = [];
+let allProducts = null; // cached products.json contents
 // flag set when a routine has been generated during this session
 let routineGenerated = false;
 
@@ -232,15 +236,27 @@ productsContainer.innerHTML = `
 
 /* Load product data from JSON file */
 async function loadProducts() {
+  // cache products after first load to avoid repeated fetches
+  if (allProducts && Array.isArray(allProducts) && allProducts.length)
+    return allProducts;
   const response = await fetch("products.json");
   const data = await response.json();
-  return data.products;
+  allProducts = data.products || [];
+  return allProducts;
 }
 
 /* Create HTML for displaying product cards */
 function displayProducts(products) {
   // keep a reference to the products we just rendered so selection can map back
   lastDisplayedProducts = products;
+
+  if (!products || products.length === 0) {
+    productsContainer.innerHTML = `
+      <div class="placeholder-message">No products found</div>
+    `;
+    lastDisplayedProducts = [];
+    return;
+  }
 
   productsContainer.innerHTML = products
     .map(
@@ -274,19 +290,42 @@ function displayProducts(products) {
   });
 }
 
-/* Filter and display products when category changes */
-categoryFilter.addEventListener("change", async (e) => {
+/* Perform combined category + search filtering and update the grid */
+async function performFilter() {
   const products = await loadProducts();
-  const selectedCategory = e.target.value;
+  let results = Array.isArray(products) ? products.slice() : [];
 
-  /* filter() creates a new array containing only products 
-     where the category matches what the user selected */
-  const filteredProducts = products.filter(
-    (product) => product.category === selectedCategory
-  );
+  const selectedCategory = categoryFilter && categoryFilter.value;
+  if (selectedCategory) {
+    results = results.filter(
+      (product) => product.category === selectedCategory
+    );
+  }
 
-  displayProducts(filteredProducts);
-});
+  const term =
+    productSearch && productSearch.value
+      ? productSearch.value.trim().toLowerCase()
+      : "";
+  if (term) {
+    results = results.filter((p) => {
+      const name = (p.name || "").toLowerCase();
+      const brand = (p.brand || "").toLowerCase();
+      const desc = (p.description || "").toLowerCase();
+      return name.includes(term) || brand.includes(term) || desc.includes(term);
+    });
+  }
+
+  displayProducts(results);
+}
+
+if (categoryFilter) {
+  categoryFilter.addEventListener("change", () => performFilter());
+}
+
+if (productSearch) {
+  // live filter as the user types
+  productSearch.addEventListener("input", () => performFilter());
+}
 
 /* Helper to append messages to the chat window */
 function appendChatMessage(role, text) {
@@ -296,7 +335,22 @@ function appendChatMessage(role, text) {
   p.textContent = text;
   wrapper.appendChild(p);
   chatWindow.appendChild(wrapper);
-  chatWindow.scrollTop = chatWindow.scrollHeight;
+  // For assistant messages, scroll so the start (top) of the new message is visible
+  // This helps users read the beginning of longer assistant replies without manually
+  // scrolling from the bottom up. For user messages, keep the previous behaviour.
+  if (role === "assistant") {
+    // small timeout to allow the element to be laid out before scrolling
+    setTimeout(() => {
+      try {
+        wrapper.scrollIntoView({ behavior: "smooth", block: "start" });
+      } catch (e) {
+        // fallback: scroll to bottom if scrollIntoView isn't supported
+        chatWindow.scrollTop = chatWindow.scrollHeight;
+      }
+    }, 50);
+  } else {
+    chatWindow.scrollTop = chatWindow.scrollHeight;
+  }
   return wrapper;
 }
 
@@ -379,6 +433,27 @@ function renderConversationFromHistory() {
     });
     return html;
   }
+
+  // highlight using an explicit list of names (used when restoring assistant messages)
+  function highlightProductMentionsUsingList(text, namesList) {
+    if (!text) return "";
+    let t = text;
+    const tokens = [];
+    (namesList || []).forEach((name, i) => {
+      if (!name) return;
+      const token = `@@HLP_${i}@@`;
+      tokens.push({ token, name });
+      const re = new RegExp(escapeRegExp(name), "gi");
+      t = t.replace(re, token);
+    });
+    let html = renderMarkdownToHTML(t);
+    tokens.forEach(({ token, name }) => {
+      const safeName = escapeHtml(name);
+      const replacement = `<span class="product-ref">${safeName}</span>`;
+      html = html.split(token).join(replacement);
+    });
+    return html;
+  }
   for (const m of messagesHistory) {
     if (!m || !m.role) continue;
     // skip system messages and any internal instructions that should not be visible
@@ -387,14 +462,39 @@ function renderConversationFromHistory() {
     if (m.role === "user") {
       appendChatMessage("user", m.content);
     } else if (m.role === "assistant") {
-      // render assistant markdown as HTML and highlight any product mentions
+      // render assistant markdown as HTML and highlight any product metions
       const wrapper = document.createElement("div");
       wrapper.className = "chat-message chat-assistant";
-      wrapper.innerHTML = highlightProductMentionsInText(m.content);
+      // if the assistant message saved metadata about highlighted products, use that list
+      if (
+        m.meta &&
+        Array.isArray(m.meta.highlightedProducts) &&
+        m.meta.highlightedProducts.length
+      ) {
+        wrapper.innerHTML = highlightProductMentionsUsingList(
+          m.content,
+          m.meta.highlightedProducts
+        );
+      } else {
+        wrapper.innerHTML = highlightProductMentionsInText(m.content);
+      }
       chatWindow.appendChild(wrapper);
     }
   }
   chatWindow.scrollTop = chatWindow.scrollHeight;
+}
+
+/* Return list of selected product names that appear in the given text (case-insensitive) */
+function computeHighlightedNamesFromText(text) {
+  if (!text || !selectedProducts || selectedProducts.length === 0) return [];
+  const found = [];
+  const lower = text.toLowerCase();
+  selectedProducts.forEach((p) => {
+    if (!p || !p.name) return;
+    const name = p.name;
+    if (lower.includes(name.toLowerCase())) found.push(name);
+  });
+  return found;
 }
 
 /* Render the selected products list UI */
@@ -627,10 +727,9 @@ function renderMarkdownToHTML(md) {
 
     // unordered list items
     if (/^[-*]\s+/.test(line)) {
-      const item = escapeHtml(line.replace(/^[-*]\s+/, "")).replace(
-        /\*\*(.*?)\*\*/g,
-        "<strong>$1</strong>"
-      );
+      const item = escapeHtml(line.replace(/^[-*]\s+/, ""))
+        .replace(/\*\*\s*([\s\S]*?)\s*\*\*/g, "<strong>$1</strong>")
+        .replace(/__\s*([\s\S]*?)\s*__/g, "<strong>$1</strong>");
       if (!inList) {
         inList = true;
         out += "<ul>";
@@ -640,10 +739,9 @@ function renderMarkdownToHTML(md) {
     }
 
     // paragraph (also support bold **text**)
-    const paragraph = escapeHtml(line).replace(
-      /\*\*(.*?)\*\*/g,
-      "<strong>$1</strong>"
-    );
+    const paragraph = escapeHtml(line)
+      .replace(/\*\*\s*([\s\S]*?)\s*\*\*/g, "<strong>$1</strong>")
+      .replace(/__\s*([\s\S]*?)\s*__/g, "<strong>$1</strong>");
     out += `<p>${paragraph}</p>`;
   }
 
@@ -686,7 +784,7 @@ if (generateBtn) {
       // when necessary. We do NOT push this into the persistent messagesHistory until after a
       // successful response, to avoid the global system prompt being misinterpreted later.
       const genInstruction =
-        "Please generate a concise, step-by-step routine using the following products. Do NOT include full product descriptions or brand overviews (those are shown in Info Mode). Focus only on ordered application steps, timing (morning/evening), frequency where relevant, and brief actionable tips (one or two short sentences per step). Format the response in Markdown (title, numbered steps, bold for important notes, and bullets for tips):\n" +
+        "Please generate a concise, step-by-step routine using the following products. Do NOT include full product descriptions or brand overviews (those are shown in Info Mode). Focus only on ordered application steps, timing (morning/evening), frequency where relevant, and brief actionable tips (one or two short sentences per step). Format the response in plain Markdown (title, numbered steps, bold for important notes, and bullets for tips). IMPORTANT: Do NOT wrap the entire response in triple-backtick code fences or include the literal word 'markdown' as a code-fence label. Return plain Markdown content only (no surrounding ``` blocks):\n" +
         JSON.stringify(userPayload, null, 2);
 
       // Clarify that all listed products must be included in the routine. Do not refuse to include
@@ -696,8 +794,28 @@ if (generateBtn) {
         "IMPORTANT: For this request, include every product listed below in the routine. Do not omit items or refuse to include them because of brand name heuristics. Keep notes short; do not repeat full product descriptions.";
 
       // Build a temporary payload that includes the current conversation plus the per-request clarifications.
+      // Build a temporary payload that includes a high-priority per-request system message
+      // which enforces formatting rules and avoids code fences, then the current conversation
+      // and the user instructions for generation. This per-request system message is not
+      // persisted into localStorage.
+      const perRequestSystem =
+        "For this single response: produce plain Markdown only. Do NOT wrap the reply in triple-backtick code fences or include a leading 'markdown' label. Be consistent and concise. The response should be human-readable Markdown (title, numbered steps, bold for important notes, bullets for tips).";
+
+      // Build a single combined system message (default system + per-request rules) so the
+      // model receives only one system role. Also prune large/old conversation pieces and
+      // exclude internal instructions when sending to the model.
+      const combinedSystemContent = `${defaultSystemMessage.content}\n\n${perRequestSystem}`;
+
+      const recent = messagesHistory.filter((m) => m.role !== "system");
+      const recentFiltered = recent.filter(
+        (m) => !(m.role === "user" && isInternalInstruction(m.content))
+      );
+      // keep only the last 20 messages to avoid context bloat
+      const pruned = recentFiltered.slice(-20);
+
       const payloadMessages = [
-        ...messagesHistory,
+        { role: "system", content: combinedSystemContent },
+        ...pruned,
         { role: "user", content: inclusionClarification },
         { role: "user", content: genInstruction },
       ];
@@ -722,15 +840,8 @@ if (generateBtn) {
         data?.reply ||
         data?.message ||
         JSON.stringify(data);
-
-      // Save the generation instruction and raw assistant reply into history for future follow-ups
-      const rawAssistant = assistantReply;
-      messagesHistory.push({ role: "user", content: genInstruction });
-      messagesHistory.push({ role: "assistant", content: rawAssistant });
-      // persist conversation
-      saveMessagesHistory();
-      // mark that a routine was generated so follow-up questions about it are allowed
-      routineGenerated = true;
+      // keep the original assistant text for saving; we'll mutate a copy for rendering
+      const originalAssistantText = assistantReply;
 
       // Highlight selected product mentions by tokenizing product names first,
       // render markdown to HTML, then replace tokens with highlighted HTML.
@@ -748,6 +859,26 @@ if (generateBtn) {
         assistantReply = assistantReply.replace(re, token);
       });
 
+      // Save the generation instruction and raw assistant reply (original text) into history for future follow-ups
+      const rawAssistant = originalAssistantText;
+      // record which product names we highlighted (tokens list) so we can re-apply highlights on restore
+      const highlightedNames = tokens.map((t) => t.name).filter(Boolean);
+      // We intentionally do NOT persist the genInstruction itself so generation prompts won't be reloaded later.
+      messagesHistory.push({
+        role: "assistant",
+        content: rawAssistant,
+        meta: { highlightedProducts: highlightedNames },
+      });
+      messagesHistory.push({
+        role: "assistant",
+        content: rawAssistant,
+        meta: { highlightedProducts: highlightedNames },
+      });
+      // persist conversation
+      saveMessagesHistory();
+      // mark that a routine was generated so follow-up questions about it are allowed
+      routineGenerated = true;
+
       // render markdown into HTML for the chat window
       let html = renderMarkdownToHTML(assistantReply);
 
@@ -760,7 +891,12 @@ if (generateBtn) {
 
       // replace loading message with formatted assistant response
       loadingEl.innerHTML = html;
-      chatWindow.scrollTop = chatWindow.scrollHeight;
+      // scroll the start of this assistant message into view so the user sees the beginning
+      try {
+        loadingEl.scrollIntoView({ behavior: "smooth", block: "start" });
+      } catch (e) {
+        chatWindow.scrollTop = chatWindow.scrollHeight;
+      }
     } catch (err) {
       console.error("Generate routine failed", err);
       loadingEl.querySelector("p").textContent =
@@ -843,13 +979,22 @@ chatForm.addEventListener("submit", async (e) => {
       JSON.stringify(data);
 
     // push assistant reply into history so follow-ups have context
-    messagesHistory.push({ role: "assistant", content: assistantReply });
+    const highlighted = computeHighlightedNamesFromText(assistantReply);
+    messagesHistory.push({
+      role: "assistant",
+      content: assistantReply,
+      meta: { highlightedProducts: highlighted },
+    });
     saveMessagesHistory();
 
     // render assistant reply (support markdown) into the chat window
     const rendered = renderMarkdownToHTML(assistantReply);
     loadingEl.innerHTML = rendered;
-    chatWindow.scrollTop = chatWindow.scrollHeight;
+    try {
+      loadingEl.scrollIntoView({ behavior: "smooth", block: "start" });
+    } catch (e) {
+      chatWindow.scrollTop = chatWindow.scrollHeight;
+    }
   } catch (err) {
     console.error("Chat request failed", err);
     loadingEl.querySelector("p").textContent =

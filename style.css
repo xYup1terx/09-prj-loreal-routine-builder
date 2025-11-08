@@ -40,17 +40,44 @@ body {
 .search-section {
   margin: 30px 0;
   display: flex;
+  gap: 12px;
+  align-items: center;
 }
 
+/* Make the select a bit narrower so the search input has visible room */
 .search-section select {
-  flex: 1; /* allow toggle button to sit beside the select */
-  padding: 16px;
+  flex: 0 1 62%; /* shrink/grow but prefer ~62% width */
+  padding: 14px 16px;
   font-size: 18px;
   border: 2px solid #000;
   border-radius: 8px;
   cursor: pointer;
   background-color: white;
   font-weight: 500;
+}
+
+/* Search input styling to match the UI and be flexible */
+.search-section input[type="search"] {
+  flex: 1; /* take remaining space */
+  padding: 12px 14px;
+  font-size: 16px;
+  border: 2px solid #ddd;
+  border-radius: 8px;
+  background: white;
+}
+
+/* Responsive: stack controls on narrow viewports */
+@media (max-width: 700px) {
+  .search-section {
+    flex-direction: column;
+    gap: 10px;
+  }
+  .search-section select,
+  .search-section input[type="search"],
+  .learnmore-toggle {
+    flex: none;
+    width: 100%;
+  }
 }
 
 /* small Learn More toggle button */
