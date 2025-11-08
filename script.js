@@ -510,11 +510,10 @@ async function performFilter() {
       ? productSearch.value.trim().toLowerCase()
       : "";
   if (term) {
+    // Only match against the product title/name per UX request
     results = results.filter((p) => {
       const name = (p.name || "").toLowerCase();
-      const brand = (p.brand || "").toLowerCase();
-      const desc = (p.description || "").toLowerCase();
-      return name.includes(term) || brand.includes(term) || desc.includes(term);
+      return name.includes(term);
     });
   }
 
