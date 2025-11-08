@@ -190,6 +190,174 @@ function isNameIntro(text) {
   return /\b(my name is|i am|i'm|im)\b/i.test(text);
 }
 
+/* Detect questions asking the assistant for the user's name, e.g. "what is my name" */
+function isNameQuery(text) {
+  if (!text || typeof text !== "string") return false;
+  const t = text.trim().toLowerCase();
+  if (/\bwhat(?:'s| is)?\s+my\s+name\b/.test(t)) return true;
+  if (/\bdo you know my name\b/.test(t)) return true;
+  if (/\bwho am i\b/.test(t)) return true;
+  return false;
+}
+
+function handleNameQuery(userText) {
+  // look back through messagesHistory for a user-intro that provided a name
+  for (let i = messagesHistory.length - 1; i >= 0; i--) {
+    const m = messagesHistory[i];
+    if (m && m.role === "user" && m.content) {
+      const parsed = parseNameFromIntro(m.content);
+      if (parsed) {
+        const reply = `Your name is ${parsed}.`;
+        appendChatMessage("assistant", reply);
+        messagesHistory.push({ role: "user", content: userText });
+        messagesHistory.push({ role: "assistant", content: reply });
+        saveMessagesHistory();
+        return true;
+      }
+    }
+  }
+
+  // if we don't know the name, prompt the user to tell us
+  const prompt =
+    "I don't know your name yet — you can tell me by saying 'My name is ...'";
+  appendChatMessage("assistant", prompt);
+  messagesHistory.push({ role: "user", content: userText });
+  messagesHistory.push({ role: "assistant", content: prompt });
+  saveMessagesHistory();
+  return true;
+}
+
+/* Detect questions asking if the assistant remembers the user */
+function isRememberQuery(text) {
+  if (!text || typeof text !== "string") return false;
+  const t = text.trim().toLowerCase();
+  const patterns = [
+    "do you remember me",
+    "remember me",
+    "do you recall me",
+    "do you remember who i am",
+    "remember who i am",
+    "do you know me",
+  ];
+  for (const p of patterns) if (t.includes(p)) return true;
+  return false;
+}
+
+function handleRememberQuery(userText) {
+  // try to find a previously provided name
+  for (let i = messagesHistory.length - 1; i >= 0; i--) {
+    const m = messagesHistory[i];
+    if (m && m.role === "user" && m.content) {
+      const parsed = parseNameFromIntro(m.content);
+      if (parsed) {
+        const reply = `Yes — I remember you as ${parsed}.`;
+        appendChatMessage("assistant", reply);
+        messagesHistory.push({ role: "user", content: userText });
+        messagesHistory.push({ role: "assistant", content: reply });
+        saveMessagesHistory();
+        return true;
+      }
+    }
+  }
+
+  // if we have selected products or a generated routine, mention that
+  if (selectedProducts && selectedProducts.length > 0) {
+    const names = selectedProducts.map((p) => p.name).slice(0, 3);
+    const reply =
+      `I remember you've selected ${selectedProducts.length} product(s)` +
+      (names.length ? `, for example: ${names.join(", ")}` : "") +
+      ".";
+    appendChatMessage("assistant", reply);
+    messagesHistory.push({ role: "user", content: userText });
+    messagesHistory.push({ role: "assistant", content: reply });
+    saveMessagesHistory();
+    return true;
+  }
+
+  if (routineGenerated) {
+    const reply = "Yes — we generated a routine previously in this session.";
+    appendChatMessage("assistant", reply);
+    messagesHistory.push({ role: "user", content: userText });
+    messagesHistory.push({ role: "assistant", content: reply });
+    saveMessagesHistory();
+    return true;
+  }
+
+  // Otherwise, be honest and prompt for a name
+  const prompt =
+    "I don't have any previous info about you yet — you can tell me your name by saying 'My name is ...' or select some products to start.";
+  appendChatMessage("assistant", prompt);
+  messagesHistory.push({ role: "user", content: userText });
+  messagesHistory.push({ role: "assistant", content: prompt });
+  saveMessagesHistory();
+  return true;
+}
+
+/* Heuristic: detect when a user is asking a math problem so we can refuse locally
+   We want to block math problem solving (calculations, algebra, calculus, etc.) but
+   avoid false positives for product-related numbers like "SPF 30" or "50 ml".
+*/
+function isMathProblem(text) {
+  if (!text || typeof text !== "string") return false;
+  const t = text.trim();
+  const lower = t.toLowerCase();
+
+  // Quick patterns: explicit arithmetic like "2+2", "3 * 4", "12/3"
+  if (/\d+\s*[\+\-\*\/\^%]\s*\d+/.test(t)) return true;
+
+  // Expressions with parentheses and operators
+  if (/\(\s*\d+[\s\d\+\-\*\/\^%]+\)/.test(t)) return true;
+
+  // Common math verbs/keywords that indicate a math problem
+  const mathWords = [
+    "calculate",
+    "solve",
+    "evaluate",
+    "simplify",
+    "differentiate",
+    "integrate",
+    "derivative",
+    "integral",
+    "limit",
+    "sum",
+    "product",
+    "factor",
+    "expand",
+    "matrix",
+    "determinant",
+    "vector",
+    "algebra",
+    "calculus",
+    "trigonometry",
+    "geometry",
+    "probability",
+    "statistics",
+    "median",
+    "variance",
+    "standard deviation",
+    "derivate",
+  ];
+  for (const w of mathWords) if (lower.includes(w)) return true;
+
+  // Patterns like "solve for x" or explicit equations. Be conservative so normal
+  // conversational questions like "what is my name" are not matched.
+  if (/solve for\s+[a-z0-9]/i.test(t) && !/\bname\b/.test(lower)) return true;
+
+  // Only treat "what is ..." as a math prompt when the next token looks numeric or
+  // starts an arithmetic expression (digits, parenthesis, or a leading operator).
+  if (/\bwhat is\b\s*[-+]?\s*(?:\(|\d)/i.test(t)) return true;
+
+  // Detect simple equations like "x = 2" or "y=3+4" but avoid triggering on
+  // harmless sentences that contain an equals-like phrase.
+  if (/[a-zA-Z]+\s*=\s*[-+]?\d/.test(t)) return true;
+
+  // Avoid false positives for product numeric mentions (sizes, SPF, ml, oz)
+  if (/\bspf\b/.test(lower)) return false;
+  if (/\b\d+\s*(ml|oz|g|mg|l)\b/.test(lower)) return false;
+
+  return false;
+}
+
 function parseNameFromIntro(text) {
   const m = text.match(/\b(?:my name is|i am|i'm|im)\s+(.+)$/i);
   if (!m) return null;
@@ -935,6 +1103,32 @@ chatForm.addEventListener("submit", async (e) => {
     const loadingEl = appendChatMessage("assistant", reply);
     messagesHistory.push({ role: "user", content: userText });
     messagesHistory.push({ role: "assistant", content: reply });
+    saveMessagesHistory();
+    return;
+  }
+
+  // If the user asks if the assistant remembers them, handle locally
+  if (isRememberQuery(userText)) {
+    handleRememberQuery(userText);
+    return;
+  }
+
+  // If the user is asking "what is my name" or similar, handle locally
+  if (isNameQuery(userText)) {
+    // handleNameQuery will append messages and persist; it always returns true
+    handleNameQuery(userText);
+    return;
+  }
+
+  // Block math problems locally — do not send them to the API
+  if (isMathProblem(userText)) {
+    const decline =
+      "Sorry — I can't help with that. I can help with L'Oréal products, routines, and related product information.";
+    // show assistant decline immediately
+    appendChatMessage("assistant", decline);
+    // persist both the user message and the assistant decline for context
+    messagesHistory.push({ role: "user", content: userText });
+    messagesHistory.push({ role: "assistant", content: decline });
     saveMessagesHistory();
     return;
   }
